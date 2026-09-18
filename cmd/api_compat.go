@@ -24,7 +24,7 @@ import (
 //	service.start          →  service.control                ([action="START", name, opts])
 //	service.stop           →  service.control                ([action="STOP",  name, opts])
 //	service.restart        →  service.control                ([action="RESTART", name, opts])
-//	zfs.dataset.rename     →  pool.dataset.rename            (само името, параметрите съвпадат)
+//	zfs.dataset.rename     →  pool.dataset.rename            (+ `force: true`, иначе EINVAL)
 
 func translateForNewApi(method string, params interface{}) (string, interface{}, bool) {
 	switch method {
@@ -49,8 +49,11 @@ func translateForNewApi(method string, params interface{}) (string, interface{},
 	case "service.restart":
 		return "service.control", buildServiceControlParams("RESTART", params), true
 	case "zfs.dataset.rename":
-		// Единствената разлика е името: и двете приемат [id, {new_name, …}].
-		return "pool.dataset.rename", params, true
+		// Имената на параметрите съвпадат, но НЕ и изискванията: `pool.dataset.rename`
+		// отказва с EINVAL без `force` — „No safety checks are performed when renaming
+		// ZFS resources". Старият `zfs.dataset.rename` нямаше такова поле, затова се
+		// добавя тук. Изрична стойност от извикващия има предимство.
+		return "pool.dataset.rename", setKeyInSecondObject(params, "force", true), true
 	}
 	return method, params, false
 }
@@ -148,6 +151,24 @@ func CompatBulkApiCallArray(api core.Session, method string, timeout int64, para
 		}
 	}
 	return out, jobId, err
+}
+
+// setKeyInSecondObject добавя key=value във втория елемент на params, когато той е map.
+// Служи за полета, които новото API изисква, а старото изобщо не познава — затова НЕ
+// презаписва вече подадена стойност. Различна форма на params се връща непокътната.
+func setKeyInSecondObject(params interface{}, key string, value interface{}) interface{} {
+	arr, ok := params.([]interface{})
+	if !ok || len(arr) < 2 {
+		return params
+	}
+	opts, ok := arr[1].(map[string]interface{})
+	if !ok {
+		return params
+	}
+	if _, exists := opts[key]; !exists {
+		opts[key] = value
+	}
+	return params
 }
 
 // renameKeyInFirstObject взима params под формата []interface{}{ {map}, ... } и
