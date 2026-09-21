@@ -40,6 +40,13 @@ import (
 0.7.5 Add `share iscsi refresh` to refresh the iscsi bus
 0.7.6 Fix macos/windows compilation issues
 0.7.7 Accept integer volblocksize, ignore stderr from iscsiadm if return code is 0
+0.7.7+fh1..fh3 NVMe-oF support over nvmet.*, transport selected per profile in config.json
+0.7.7+fh4 Makes NVMe-oF usable as an Incus pool. The pool, the zvol and the connection all worked, yet no instance would launch: the NVMe path ignored the OUTPUT CONTRACT the driver reads. Incus parses lines, not exit codes.
+0.7.7+fh4 From `locate` it expects `created\t…`, `activated\t…`, `located\t…` WITH the prefixes, even under --parsable (doIscsiActivate is called from locateIscsi with shouldPrintStatus=true). A bare path is read as something else and the driver reports "unable to activate" over a healthy device. Fixed in create, activate and locate.
+0.7.7+fh4 `locate` with no flags now reports an already-attached volume at all. It was a pure flag dispatcher returning nothing, which produced "Unable to create, activate or locate TrueNAS volume: <vol>, " with an empty quote.
+0.7.7+fh4 `test|list|refresh` are redirected too: `list` reported nothing, `refresh` rescanned the iSCSI bus so a grown volume never reached the guest, `test` required the iSCSI service on an all-NVMe appliance.
+0.7.7+fh4 `test` tolerates a port with no subsystems — nvmet only listens once one is linked. Rollback deletes in reverse order, as nvmet silently refuses to drop a subsystem still linked to a port. `setup` starts the nvmet service instead of only complaining.
+0.7.7+fh4 Adds `share nvme test|refresh|devices` and a marker-gated argv+output log (ArgvLogPath), because Incus never logs the commands it runs.
 */
 const VERSION = "0.7.7"
 

@@ -43,40 +43,58 @@ func requireRootForNvme(action string) error {
 	return nil
 }
 
-// FindNvmeDeviceBySubNqn връща /dev/nvmeXnY за даден subsystem NQN, или "" ако го няма.
-func FindNvmeDeviceBySubNqn(subNqn string) string {
+// IterateConnectedNvmeSubsystems обхожда свързаните subsystem-и и подава NQN-а с
+// блоковите устройства под него.
+//
+// Това е NVMe заместителят на IterateActivatedIscsiShares. При iSCSI списъкът се чете от
+// /dev/disk/by-path, където името носи портала и IQN-а. При NVMe такъв възел няма —
+// същото се разбира само от sysfs.
+func IterateConnectedNvmeSubsystems(cb func(subNqn string, devPaths []string)) {
 	subsystems, err := os.ReadDir(nvmeSubsystemsDir)
 	if err != nil {
-		return ""
+		return
 	}
 
 	for _, sub := range subsystems {
-		nqnPath := filepath.Join(nvmeSubsystemsDir, sub.Name(), "subsysnqn")
-		raw, err := os.ReadFile(nqnPath)
+		raw, err := os.ReadFile(filepath.Join(nvmeSubsystemsDir, sub.Name(), "subsysnqn"))
 		if err != nil {
 			continue
 		}
-		if strings.TrimSpace(string(raw)) != subNqn {
-			continue
-		}
+		subNqn := strings.TrimSpace(string(raw))
 
-		// Namespace-ите са деца на subsystem-а и се казват nvmeXnY.
 		entries, err := os.ReadDir(filepath.Join(nvmeSubsystemsDir, sub.Name()))
 		if err != nil {
 			continue
 		}
+
+		devices := make([]string, 0, 1)
 		for _, e := range entries {
 			name := e.Name()
+			// Namespace-ите са деца на subsystem-а и се казват nvmeXnY. Контролерите
+			// (nvmeX) също са деца — разликата е точно във втората "n".
 			if !strings.HasPrefix(name, "nvme") || !strings.Contains(name[4:], "n") {
 				continue
 			}
 			devPath := "/dev/" + name
 			if info, err := os.Stat(devPath); err == nil && info.Mode()&os.ModeDevice != 0 {
-				return devPath
+				devices = append(devices, devPath)
 			}
 		}
+
+		cb(subNqn, devices)
 	}
-	return ""
+}
+
+// FindNvmeDeviceBySubNqn връща /dev/nvmeXnY за даден subsystem NQN, или "" ако го няма.
+func FindNvmeDeviceBySubNqn(subNqn string) string {
+	found := ""
+	IterateConnectedNvmeSubsystems(func(nqn string, devPaths []string) {
+		if found != "" || nqn != subNqn || len(devPaths) == 0 {
+			return
+		}
+		found = devPaths[0]
+	})
+	return found
 }
 
 func RunNvmeConnect(addr string, port int, subNqn string) error {
@@ -146,4 +164,58 @@ func WaitForNvmeDeviceGone(subNqn string, timeout time.Duration) bool {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// RunNvmeDiscover пита портала какви subsystem-и предлага.
+//
+// Това е NVMe съответствието на `iscsiadm -m discovery`, с което `share iscsi test`
+// доказва, че порталът отговаря. Без него проверката на връзката при NVMe оставаше на
+// iSCSI и буквално изискваше iSCSI услугата да е пусната на уреда — при положение че по
+// нея не минава нито един байт.
+func RunNvmeDiscover(addr string, port int) (string, error) {
+	if err := CheckNvmeCliExists(); err != nil {
+		return "", err
+	}
+	out, err, status := core.RunCommand("nvme", "discover",
+		"-t", "tcp",
+		"-a", stripIpV6Brackets(addr),
+		"-s", fmt.Sprint(port),
+	)
+	if err != nil {
+		return out, fmt.Errorf("nvme discover failed (%d): %v", status, err)
+	}
+	return out, nil
+}
+
+// RunNvmeRescan пресканира namespace-ите на свързаните контролери.
+//
+// Това е NVMe съответствието на `iscsiadm -m node -R` — начинът, по който порасналият
+// том се вижда от нода, без да се разкача. Контролерите са /sys/class/nvme/nvmeX;
+// `nvme ns-rescan` се пуска срещу символното устройство на всеки от тях.
+func RunNvmeRescan() error {
+	if err := CheckNvmeCliExists(); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir("/sys/class/nvme")
+	if err != nil {
+		// Няма нито един NVMe контролер — няма какво да се пресканира.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var firstErr error
+	for _, e := range entries {
+		name := e.Name()
+		// Само контролери (nvmeX), не namespace-и (nvmeXnY).
+		if !strings.HasPrefix(name, "nvme") || strings.Contains(name[4:], "n") {
+			continue
+		}
+		if _, err, status := core.RunCommand("nvme", "ns-rescan", "/dev/"+name); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("nvme ns-rescan %s failed (%d): %v", name, status, err)
+		}
+	}
+	return firstErr
 }

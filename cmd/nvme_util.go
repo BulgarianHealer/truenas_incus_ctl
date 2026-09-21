@@ -270,3 +270,26 @@ func CheckRemoteNvmetServiceIsRunning(api core.Session) (string, error) {
 	}
 	return "", nil
 }
+
+// CountNvmePortSubsys брои subsystem-ите, закачени за даден порт.
+//
+// Нужно е, защото `nvmet` портът на TrueNAS слуша САМО докато има поне един закачен
+// subsystem: при нула връзки TCP 4420 отказва връзка. iSCSI порталът слуша безусловно,
+// затова разликата изненадва — и удря точно при създаване на пул върху празен уред,
+// когато Incus проверява връзката, а споделяния още няма.
+func CountNvmePortSubsys(api core.Session, portId int) (int, error) {
+	params := []interface{}{
+		[]interface{}{[]interface{}{"port_id", "=", portId}},
+		make(map[string]interface{}),
+	}
+	out, err := core.ApiCall(api, "nvmet.port_subsys.query", defaultCallTimeout, params)
+	if err != nil {
+		return 0, err
+	}
+	var response map[string]interface{}
+	if err = json.Unmarshal(out, &response); err != nil {
+		return 0, err
+	}
+	results, _ := response["result"].([]interface{})
+	return len(results), nil
+}

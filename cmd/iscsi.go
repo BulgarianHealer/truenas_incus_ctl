@@ -397,6 +397,9 @@ func undoIscsiCreateList(api core.Session, changes *[]typeApiCallRecord) {
 }
 
 func testIscsi(cmd *cobra.Command, api core.Session, args []string) error {
+	if isNvmeTransport() {
+		return dispatchNvme("test", testNvme, cmd, api, args)
+	}
 	cmd.SilenceUsage = true
 	options, _ := GetCobraFlags(cmd, false, nil)
 
@@ -493,6 +496,9 @@ func setupIscsiImpl(api core.Session, options FlagMap) error {
 }
 
 func listIscsi(cmd *cobra.Command, api core.Session, args []string) error {
+	if isNvmeTransport() {
+		return dispatchNvme("list", listNvmeDevices, cmd, api, args)
+	}
 	IterateActivatedIscsiShares("", func(root string, fullName string, ipPortalAddr string, iqnTargetName string, targetOnlyName string) {
 		fullPath := path.Join(root, fullName)
 		fmt.Println(fullPath)
@@ -501,6 +507,9 @@ func listIscsi(cmd *cobra.Command, api core.Session, args []string) error {
 }
 
 func refreshIscsi(cmd *cobra.Command, api core.Session, args []string) error {
+	if isNvmeTransport() {
+		return dispatchNvme("refresh", refreshNvme, cmd, api, args)
+	}
 	cmd.SilenceUsage = true
 
 	thisUser, err := user.Current()

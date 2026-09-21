@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path"
 	"strings"
+	"time"
 	"truenas/truenas_incus_ctl/core"
 
 	"github.com/spf13/cobra"
@@ -40,10 +42,80 @@ var g_apiKey string
 var g_transport string
 
 func Execute() {
+	finishLog := maybeLogArgv()
 	err := rootCmd.Execute()
+	finishLog()
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+// ArgvLogPath е файлът-маркер, който включва записването на командния ред и изхода.
+//
+// Нужен е, защото Incus НЕ записва командите, които пуска — дори на debug. Единственото
+// изключение е „Failed to run: …" при провал, тоест точно когато е късно. Без това остава
+// да се гадае с какви флагове е извикан инструментът и какво е отговорил, а изходът му е
+// договорът с драйвера: един ред не на място се чете за път до устройство.
+//
+// Маркерът е файл, а не променлива на средата, защото средата на `incusd` не се пипа
+// отвън. Докосни файла, възпроизведи веднъж, изтрий го.
+const ArgvLogPath = "/var/lib/incus/.truenas_incus_ctl/argv.log"
+
+// maybeLogArgv връща функция за затваряне, която ВИНАГИ трябва да се извика преди
+// os.Exit — иначе прихванатият изход остава в тръбата.
+func maybeLogArgv() func() {
+	f, err := os.OpenFile(ArgvLogPath, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return func() {}
+	}
+	fmt.Fprintf(f, "%s\t$ %s\n", time.Now().Format(time.RFC3339), strings.Join(os.Args[1:], " "))
+
+	// И двата потока, защото грешката на cobra отива на stderr: команда, която се е
+	// провалила, иначе изглежда просто като команда без изход.
+	outClose, outDone, outOk := teeStream(f, &os.Stdout, ">")
+	errClose, errDone, errOk := teeStream(f, &os.Stderr, "!")
+	if !outOk && !errOk {
+		f.Close()
+		return func() {}
+	}
+
+	return func() {
+		outClose()
+		errClose()
+		<-outDone
+		<-errDone
+		f.Close()
+	}
+}
+
+// teeStream пренасочва поток към тръба, копира редовете обратно и ги записва в дневника.
+func teeStream(logFile *os.File, stream **os.File, marker string) (func(), chan struct{}, bool) {
+	done := make(chan struct{})
+	r, w, err := os.Pipe()
+	if err != nil {
+		close(done)
+		return func() {}, done, false
+	}
+
+	real := *stream
+	*stream = w
+
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			fmt.Fprintln(real, line)
+			fmt.Fprintf(logFile, "\t%s %s\n", marker, line)
+		}
+		r.Close()
+	}()
+
+	return func() {
+		*stream = real
+		w.Close()
+	}, done, true
 }
 
 func init() {
