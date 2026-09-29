@@ -97,6 +97,16 @@ func FindNvmeDeviceBySubNqn(subNqn string) string {
 	return found
 }
 
+// nvmeCtrlLossTmo е колко секунди ядрото опитва да се върне към изчезнал таргет,
+// преди да изтрие устройството завинаги.
+//
+// По подразбиране е 600. На 29.09.2026 обновяването на TrueNAS продължи повече:
+// ядрото изтри устройствата, контейнерите останаха „RUNNING" върху мъртъв монтаж,
+// а новата връзка след връщането вдигна ново устройство, което никой не монтира.
+// С 2 часа I/O просто чака и продължава само. Безкрайно (-1) е отхвърлено нарочно:
+// при окончателно мъртъв таргет процесите биха висели, докато някой не разкачи ръчно.
+const nvmeCtrlLossTmo = 7200
+
 func RunNvmeConnect(addr string, port int, subNqn string) error {
 	if err := CheckNvmeCliExists(); err != nil {
 		return err
@@ -107,6 +117,7 @@ func RunNvmeConnect(addr string, port int, subNqn string) error {
 		"-a", stripIpV6Brackets(addr),
 		"-s", fmt.Sprint(port),
 		"-n", subNqn,
+		"--ctrl-loss-tmo", fmt.Sprint(nvmeCtrlLossTmo),
 	}
 	out, err, status := core.RunCommand("nvme", args...)
 	if err != nil {
